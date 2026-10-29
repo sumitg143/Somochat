@@ -1,0 +1,6 @@
+{
+  "name": "SomoChat 3D - Real P2P Chat, Audio & Video Call",
+  "description": "Real P2P chat with 3D animated Emoji mascot character, HD video & voice calling, voice notes, and animated heart & emoji react motion.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
