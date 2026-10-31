@@ -11,6 +11,10 @@ import {
   ChevronDown,
   ChevronUp,
   Volume2,
+  ImagePlus,
+  Camera,
+  CirclePlus,
+  X,
 } from 'lucide-react';
 import {
   ChatMessage,
@@ -45,6 +49,11 @@ export default function App() {
   const [inputText, setInputText] = useState<string>('');
   const [isFriendTyping, setIsFriendTyping] = useState<boolean>(false);
   const [isRecordingVoice, setIsRecordingVoice] = useState<boolean>(false);
+  const [isGroupPanelOpen, setIsGroupPanelOpen] = useState<boolean>(false);
+  const [groupName, setGroupName] = useState<string>('');
+  const [groupMembers, setGroupMembers] = useState<string[]>([]);
+  const [statusText, setStatusText] = useState<string>('Available to chat');
+  const [isStatusPanelOpen, setIsStatusPanelOpen] = useState<boolean>(false);
 
   // 3D Mascot State
   const [mascotEmotion, setMascotEmotion] = useState<MascotEmotion>('happy');
@@ -71,6 +80,8 @@ export default function App() {
 
   // Modals & UI
   const [isLinkModalOpen, setIsLinkModalOpen] = useState<boolean>(false);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
 
   // Refs for WebRTC & Audio
   const peerRef = useRef<Peer | null>(null);
@@ -185,7 +196,7 @@ export default function App() {
       if (packet.type === 'profile_sync' && packet.senderName) {
         setFriendName(packet.senderName);
         setMascotSpeech(`${packet.senderName} online hai! 👋`);
-      } else if (packet.type === 'text' || packet.type === 'voice') {
+      } else if (packet.type === 'text' || packet.type === 'voice' || packet.type === 'image') {
         const newMsg: ChatMessage = {
           id: packet.id || Math.random().toString(36).slice(2),
           senderId: packet.senderId || 'peer',
@@ -194,6 +205,7 @@ export default function App() {
           timestamp: packet.timestamp || Date.now(),
           isYou: false,
           type: packet.type,
+          imageUrl: packet.imageUrl,
           audioUrl: packet.audioUrl,
           audioDuration: packet.audioDuration,
           reactions: {},
@@ -357,6 +369,37 @@ export default function App() {
         message: { ...newMsg, isYou: false },
       });
     }
+  };
+
+  // Send an image from the gallery or camera as a chat message.
+  const handleImageSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const imageUrl = String(reader.result);
+      const newMsg: ChatMessage = {
+        id: Math.random().toString(36).slice(2, 9),
+        senderId: myPeerId || 'you', senderName: username, content: file.name,
+        timestamp: Date.now(), isYou: true, type: 'image', imageUrl,
+        reactions: {}, status: isLinked ? 'sent' : 'queued',
+      };
+      setMessages((prev) => [...prev, newMsg]);
+      setMascotEmotion('party');
+      setMascotSpeech('Photo share ho gayi! 📸');
+      sound.playSent();
+      if (activeConnRef.current?.open) activeConnRef.current.send({ type: 'image', id: newMsg.id, senderId: myPeerId, senderName: username, content: file.name, imageUrl, timestamp: newMsg.timestamp } as PeerPacket);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const createGroup = () => {
+    const name = groupName.trim() || 'New SomoChat group';
+    setGroupName(name);
+    setGroupMembers((prev) => (prev.length ? prev : [username, friendName]));
+    setIsGroupPanelOpen(false);
+    setMascotSpeech(`${name} group ready hai! 👥`);
   };
 
   // Send Voice Note
@@ -860,6 +903,12 @@ export default function App() {
 
           {/* Quick Action Buttons */}
           <div className="flex items-center gap-1.5 sm:gap-2">
+            <button onClick={() => setIsStatusPanelOpen((open) => !open)} className="hidden sm:flex items-center gap-1.5 px-2.5 py-2 rounded-xl bg-amber-400/10 hover:bg-amber-400/20 text-amber-200 border border-amber-300/20 text-[11px] font-bold" title="Update your status">
+              <CirclePlus size={15} /> Status
+            </button>
+            <button onClick={() => setIsGroupPanelOpen((open) => !open)} className="p-2.5 rounded-xl bg-teal-400/10 hover:bg-teal-400/20 text-teal-200 border border-teal-300/20 transition-all" title="Create a group chat">
+              <Users size={17} />
+            </button>
             {/* Voice Call Button */}
             <button
               onClick={() => startCall('audio')}
@@ -897,6 +946,27 @@ export default function App() {
             </button>
           </div>
         </header>
+
+        {(isGroupPanelOpen || isStatusPanelOpen) && (
+          <section className="mx-3 mt-3 p-3 rounded-2xl bg-black/25 border border-white/10 shrink-0 animate-pop-in" aria-label="Chat options">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-bold text-white">{isGroupPanelOpen ? 'Create a group chat' : 'Your status'}</h3>
+              <button onClick={() => { setIsGroupPanelOpen(false); setIsStatusPanelOpen(false); }} className="p-1 rounded-lg text-purple-300 hover:bg-white/10" title="Close options"><X size={14} /></button>
+            </div>
+            {isGroupPanelOpen ? (
+              <div className="flex gap-2">
+                <input value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Group name" className="min-w-0 flex-1 rounded-xl border border-purple-500/30 bg-black/30 px-3 py-2 text-xs text-white outline-none" />
+                <button onClick={createGroup} className="rounded-xl bg-teal-500 px-3 py-2 text-xs font-bold text-white hover:bg-teal-400">Create</button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <input value={statusText} onChange={(e) => setStatusText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') setIsStatusPanelOpen(false); }} className="min-w-0 flex-1 rounded-xl border border-purple-500/30 bg-black/30 px-3 py-2 text-xs text-white outline-none" aria-label="Status message" />
+                <button onClick={() => setIsStatusPanelOpen(false)} className="rounded-xl bg-amber-500 px-3 py-2 text-xs font-bold text-white hover:bg-amber-400">Save</button>
+              </div>
+            )}
+            {groupMembers.length > 0 && <p className="mt-2 text-[10px] text-teal-200/70">{groupName} · {groupMembers.length} members</p>}
+          </section>
+        )}
 
         {/* 3D Animated Emoji Mascot Stage */}
         {showMascotStage && (
@@ -991,6 +1061,14 @@ export default function App() {
             />
           ) : (
             <div className="flex items-center gap-2">
+              <input ref={galleryInputRef} type="file" accept="image/*" multiple className="sr-only" onChange={handleImageSelected} />
+              <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleImageSelected} />
+              <button onClick={() => galleryInputRef.current?.click()} className="p-3 rounded-2xl bg-teal-400/10 hover:bg-teal-400/20 text-teal-200 border border-teal-300/20 transition-all active:scale-95 shrink-0" title="Send from gallery">
+                <ImagePlus size={19} />
+              </button>
+              <button onClick={() => cameraInputRef.current?.click()} className="p-3 rounded-2xl bg-amber-400/10 hover:bg-amber-400/20 text-amber-200 border border-amber-300/20 transition-all active:scale-95 shrink-0" title="Take a photo">
+                <Camera size={19} />
+              </button>
               {/* Voice Record Button */}
               <button
                 onClick={() => setIsRecordingVoice(true)}
