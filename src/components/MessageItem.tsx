@@ -138,6 +138,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               isYou={message.isYou}
               onTalkingLevel={onTalkingLevel}
             />
+          ) : message.type === 'image' && message.imageUrl ? (
+            <div className="space-y-1">
+              <img src={message.imageUrl} alt={message.content || 'Shared image'} className="max-h-64 max-w-full rounded-xl object-cover" />
+              <p className="text-[11px] opacity-70">{message.content}</p>
+            </div>
           ) : (
             <p className="text-sm sm:text-[15px] leading-relaxed break-words whitespace-pre-wrap select-text">
               {message.content}
