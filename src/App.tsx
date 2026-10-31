@@ -29,6 +29,7 @@ import { MessageItem } from './components/MessageItem';
 import { VoiceRecorder } from './components/VoiceRecorder';
 import { CallModal } from './components/CallModal';
 import { LinkPeerModal } from './components/LinkPeerModal';
+import { supabase } from './lib/supabase';
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -40,6 +41,12 @@ export default function App() {
   // User & Profile State
   const [username, setUsername] = useState<string>('');
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [userId, setUserId] = useState('');
   const [myPeerId, setMyPeerId] = useState<string>('');
   const [friendName, setFriendName] = useState<string>('Friend');
   const [isLinked, setIsLinked] = useState<boolean>(false);
@@ -53,6 +60,7 @@ export default function App() {
   const [groupName, setGroupName] = useState<string>('');
   const [groupMembers, setGroupMembers] = useState<string[]>([]);
   const [statusText, setStatusText] = useState<string>('Available to chat');
+  const [statusMedia, setStatusMedia] = useState<{ url: string; type: 'image' | 'video' } | null>(null);
   const [isStatusPanelOpen, setIsStatusPanelOpen] = useState<boolean>(false);
 
   // 3D Mascot State
@@ -92,6 +100,65 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const localTabId = useRef<string>(Math.random().toString(36).slice(2, 9));
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      const user = data.session?.user;
+      if (user) {
+        setUserId(user.id);
+        setAuthEmail(user.email || '');
+        setUsername(user.user_metadata?.display_name || user.email?.split('@')[0] || 'Dost');
+        setIsLoggedIn(true);
+      }
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      const user = session?.user;
+      setUserId(user?.id || '');
+      setIsLoggedIn(Boolean(user));
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  const handleAuth = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError('');
+    const displayName = username.trim() || authEmail.split('@')[0] || 'Dost';
+    const result = authMode === 'signup'
+      ? await supabase.auth.signUp({ email: authEmail, password: authPassword, options: { data: { display_name: displayName } } })
+      : await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+    if (result.error) {
+      setAuthError(result.error.message.toLowerCase().includes('confirm') ? 'Email confirm karke dobara login karein.' : 'Email ya password galat hai.');
+    } else if (result.data.user) {
+      setUserId(result.data.user.id);
+      setUsername(result.data.user.user_metadata?.display_name || displayName);
+      setIsLoggedIn(true);
+      initPeer(result.data.user.user_metadata?.display_name || displayName);
+    }
+    setAuthBusy(false);
+  };
+
+  const persistMessage = async (message: ChatMessage) => {
+    if (!userId) return;
+    await supabase.from('chat_messages').insert({
+      user_id: userId, sender_id: message.senderId, sender_name: message.senderName,
+      content: message.content, message_type: message.type, image_url: message.imageUrl || null,
+      audio_url: message.audioUrl || null, audio_duration: message.audioDuration || null,
+      created_at: new Date(message.timestamp).toISOString(),
+    });
+  };
+
+  const resetMessages = async () => {
+    setMessages([]);
+    if (userId) await supabase.from('chat_messages').delete().eq('user_id', userId);
+  };
+
+  useEffect(() => {
+    if (!userId) return;
+    supabase.from('chat_messages').select('id,sender_id,sender_name,content,message_type,image_url,audio_url,audio_duration,created_at').eq('user_id', userId).order('created_at', { ascending: true }).then(({ data }) => {
+      if (data?.length) setMessages(data.map((row) => ({ id: row.id, senderId: row.sender_id, senderName: row.sender_name, content: row.content, timestamp: Date.parse(row.created_at), isYou: row.sender_id === myPeerId || row.sender_id === 'you', type: row.message_type as ChatMessage['type'], imageUrl: row.image_url || undefined, audioUrl: row.audio_url || undefined, audioDuration: row.audio_duration || undefined, reactions: {}, status: 'delivered' })));
+    });
+  }, [userId]);
 
   // Initialize BroadcastChannel for same-device multi-tab testing
   useEffect(() => {
@@ -336,6 +403,7 @@ export default function App() {
     };
 
     setMessages((prev) => [...prev, newMsg]);
+    void persistMessage(newMsg);
     setInputText('');
     sound.playSent();
 
@@ -386,12 +454,28 @@ export default function App() {
         reactions: {}, status: isLinked ? 'sent' : 'queued',
       };
       setMessages((prev) => [...prev, newMsg]);
+      void persistMessage(newMsg);
       setMascotEmotion('party');
       setMascotSpeech('Photo share ho gayi! 📸');
       sound.playSent();
       if (activeConnRef.current?.open) activeConnRef.current.send({ type: 'image', id: newMsg.id, senderId: myPeerId, senderName: username, content: file.name, imageUrl, timestamp: newMsg.timestamp } as PeerPacket);
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleStatusMedia = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || (!file.type.startsWith('image/') && !file.type.startsWith('video/'))) return;
+    const reader = new FileReader();
+    reader.onload = () => setStatusMedia({ url: String(reader.result), type: file.type.startsWith('video/') ? 'video' : 'image' });
+    reader.readAsDataURL(file);
+  };
+
+  const saveStatus = async () => {
+    if (userId) await supabase.from('chat_statuses').insert({ user_id: userId, content: statusText, status_type: statusMedia?.type || 'text', media_url: statusMedia?.url || null });
+    setIsStatusPanelOpen(false);
+    setMascotSpeech('Status update ho gaya!');
   };
 
   const createGroup = () => {
@@ -419,6 +503,7 @@ export default function App() {
     };
 
     setMessages((prev) => [...prev, newMsg]);
+    void persistMessage(newMsg);
     setIsRecordingVoice(false);
     sound.playSent();
     setMascotEmotion('party');
@@ -805,25 +890,13 @@ export default function App() {
             Real P2P Chat · HD Video Call · Voice Chat · Heart Motion
           </p>
 
-          <form onSubmit={handleStartChat} className="space-y-4">
-            <div>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Apna username chune (e.g. Amit)"
-                maxLength={24}
-                className="w-full px-4 py-3.5 bg-black/40 border border-purple-500/30 rounded-2xl text-white placeholder-purple-300/40 text-center font-semibold text-base outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all"
-                autoFocus
-              />
-            </div>
-
-            <button
-              type="submit"
-              className="w-full py-4 bg-gradient-to-r from-amber-400 via-pink-500 to-purple-600 hover:from-amber-300 hover:via-pink-400 hover:to-purple-500 text-white font-bold text-base rounded-2xl shadow-lg shadow-pink-600/30 active:scale-95 transition-all cursor-pointer"
-            >
-              Start Chatting 🚀
-            </button>
+          <form onSubmit={handleAuth} className="space-y-3">
+            {authMode === 'signup' && <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Aapka display name" maxLength={24} className="w-full px-4 py-3.5 bg-black/40 border border-purple-500/30 rounded-2xl text-white placeholder-purple-300/40 text-center font-semibold outline-none focus:border-purple-400" />}
+            <input type="email" required value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="Email address" className="w-full px-4 py-3.5 bg-black/40 border border-purple-500/30 rounded-2xl text-white placeholder-purple-300/40 text-center font-semibold outline-none focus:border-purple-400" autoFocus />
+            <input type="password" required minLength={6} value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="Password (minimum 6 characters)" className="w-full px-4 py-3.5 bg-black/40 border border-purple-500/30 rounded-2xl text-white placeholder-purple-300/40 text-center font-semibold outline-none focus:border-purple-400" />
+            {authError && <p className="text-xs text-rose-300">{authError}</p>}
+            <button disabled={authBusy} type="submit" className="w-full py-4 bg-gradient-to-r from-amber-400 via-pink-500 to-purple-600 text-white font-bold text-base rounded-2xl shadow-lg shadow-pink-600/30 disabled:opacity-50">{authBusy ? 'Please wait...' : authMode === 'login' ? 'Login securely' : 'Create account'}</button>
+            <button type="button" onClick={() => { setAuthMode(authMode === 'login' ? 'signup' : 'login'); setAuthError(''); }} className="w-full text-xs text-purple-300 hover:text-white">{authMode === 'login' ? 'New user? Create an account' : 'Already have an account? Login'}</button>
           </form>
 
           <div className="mt-6 pt-5 border-t border-white/10 flex items-center justify-center gap-4 text-xs text-purple-300/60 font-medium">
@@ -903,6 +976,8 @@ export default function App() {
 
           {/* Quick Action Buttons */}
           <div className="flex items-center gap-1.5 sm:gap-2">
+            <button onClick={resetMessages} className="hidden sm:inline-flex px-2.5 py-2 rounded-xl bg-rose-400/10 hover:bg-rose-400/20 text-rose-200 border border-rose-300/20 text-[11px] font-bold" title="Delete all saved messages">Reset</button>
+            <button onClick={async () => { await supabase.auth.signOut(); setMessages([]); setIsLoggedIn(false); }} className="hidden sm:inline-flex px-2.5 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-[11px] font-bold" title="Logout">Logout</button>
             <button onClick={() => setIsStatusPanelOpen((open) => !open)} className="hidden sm:flex items-center gap-1.5 px-2.5 py-2 rounded-xl bg-amber-400/10 hover:bg-amber-400/20 text-amber-200 border border-amber-300/20 text-[11px] font-bold" title="Update your status">
               <CirclePlus size={15} /> Status
             </button>
@@ -959,9 +1034,12 @@ export default function App() {
                 <button onClick={createGroup} className="rounded-xl bg-teal-500 px-3 py-2 text-xs font-bold text-white hover:bg-teal-400">Create</button>
               </div>
             ) : (
-              <div className="flex gap-2">
-                <input value={statusText} onChange={(e) => setStatusText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') setIsStatusPanelOpen(false); }} className="min-w-0 flex-1 rounded-xl border border-purple-500/30 bg-black/30 px-3 py-2 text-xs text-white outline-none" aria-label="Status message" />
-                <button onClick={() => setIsStatusPanelOpen(false)} className="rounded-xl bg-amber-500 px-3 py-2 text-xs font-bold text-white hover:bg-amber-400">Save</button>
+              <div className="flex flex-wrap gap-2">
+                <input value={statusText} onChange={(e) => setStatusText(e.target.value)} className="min-w-0 flex-1 rounded-xl border border-purple-500/30 bg-black/30 px-3 py-2 text-xs text-white outline-none" aria-label="Status message" placeholder="Text status likhein" />
+                <input type="file" accept="image/*,video/*" className="sr-only" id="status-media" onChange={handleStatusMedia} />
+                <label htmlFor="status-media" className="cursor-pointer rounded-xl bg-purple-500/20 px-3 py-2 text-xs font-bold text-purple-100">Photo / Video</label>
+                <button onClick={saveStatus} className="rounded-xl bg-amber-500 px-3 py-2 text-xs font-bold text-white hover:bg-amber-400">Save</button>
+                {statusMedia && <span className="w-full text-[10px] text-purple-200">Media attached · 24 hours visible</span>}
               </div>
             )}
             {groupMembers.length > 0 && <p className="mt-2 text-[10px] text-teal-200/70">{groupName} · {groupMembers.length} members</p>}
